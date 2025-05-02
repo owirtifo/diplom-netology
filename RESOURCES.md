@@ -1,4 +1,4 @@
-## Дипломный практикум в Yandex.Cloud
+## Ресурсы для сдачи задания
 
 1. [Репозиторий](https://github.com/owirtifo/app-netology-repo) с конфигурационными файлами Terraform.
 2. [Репозиторий](https://github.com/owirtifo/app-netology-repo/tree/main/kubespray) с Kubespray.
