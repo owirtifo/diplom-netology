@@ -1,0 +1,237 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: atlantis
+spec:
+  serviceName: atlantis
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: atlantis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: atlantis
+    spec:
+      securityContext:
+        fsGroup: 1000 # Atlantis group (1000) read/write access to volumes.
+      initContainers:
+      - name: volume-chown
+        image: busybox
+        command: ["sh", "-c", "chown -R 100:1000 /atlantis"]
+        securityContext:
+          capabilities:
+            drop:
+              - all
+            add: ["CHOWN"]
+        volumeMounts:
+        - name: atlantis-data
+          mountPath: /atlantis
+      containers:
+      - name: atlantis
+        image: ghcr.io/runatlantis/atlantis:v0.32.0 # 1. Replace <VERSION> with the most recent release.
+        env:
+        - name: ATLANTIS_REPO_ALLOWLIST
+          value: github.com/owirtifo/app-netology-repo # 2. Replace this with your own repo allowlist.
+
+        ### GitHub Config ###
+        - name: ATLANTIS_GH_USER
+          value: atlantis # 3i. If you're using GitHub replace <YOUR_GITHUB_USER> with the username of your Atlantis GitHub user without the `@`.
+        - name: ATLANTIS_GH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: atlantis-vcs
+              key: gh-token
+        - name: ATLANTIS_GH_WEBHOOK_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: atlantis-vcs
+              key: gh-webhook-secret
+
+        ### End GitHub Config ###
+
+        - name: YC_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: atlantis-vcs
+              key: yc-token
+        - name: TF_VAR_BK_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: atlantis-vcs
+              key: bk-access-key
+        - name: TF_VAR_BK_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: atlantis-vcs
+              key: bk-secret-key
+        - name: ATLANTIS_DATA_DIR
+          value: /atlantis
+        - name: ATLANTIS_REPO_CONFIG
+          value: /atlantis/repo_config/repos.yaml
+        - name: ATLANTIS_PORT
+          value: "4141" # Kubernetes sets an ATLANTIS_PORT variable so we need to override.
+        volumeMounts:
+        - name: atlantis-data
+          mountPath: /atlantis
+        - name: cm-atlantis-repo
+          mountPath: /atlantis/repo_config
+        - name: cm-atlantis-terraformrc
+          mountPath: /home/atlantis/.terraformrc
+          subPath: .terraformrc
+        - name: secret-atlantis-ssh-key
+          mountPath: /home/atlantis/.ssh
+          readOnly: true
+        ports:
+        - name: atlantis
+          containerPort: 4141
+        resources:
+          requests:
+            memory: 512Mi
+            cpu: 800m
+          limits:
+            memory: 512Mi
+            cpu: 800m
+        livenessProbe:
+          # We only need to check every 60s since Atlantis is not a
+          # high-throughput service.
+          periodSeconds: 60
+          httpGet:
+            path: /healthz
+            port: 4141
+            # If using https, change this to HTTPS
+            scheme: HTTP
+        readinessProbe:
+          periodSeconds: 60
+          httpGet:
+            path: /healthz
+            port: 4141
+            # If using https, change this to HTTPS
+            scheme: HTTP
+      volumes:
+        - name: cm-atlantis-repo
+          configMap:
+            name: atlantis-repo
+        - name: cm-atlantis-terraformrc
+          configMap:
+            name: atlantis-terraformrc
+        - name: secret-atlantis-ssh-key
+          secret:
+            secretName: atlantis-ssh-key
+  volumeClaimTemplates:
+  - metadata:
+      name: atlantis-data
+    spec:
+      accessModes: ["ReadWriteOnce"] # Volume should not be shared by multiple nodes.
+      resources:
+        requests:
+          # The biggest thing Atlantis stores is the Git repo when it checks it out.
+          # It deletes the repo after the pull request is merged.
+          storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-atlantis
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/atlantis"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-atlantis
+spec:
+  type: ClusterIP
+  ports:
+  - name: atlantis
+    port: 80
+    targetPort: 4141
+  selector:
+    app.kubernetes.io/name: atlantis
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-netology
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    kubernetes.io/ingress.class: nginx
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+      - atlantis.gfg24.com
+    secretName: atlantis-secret-tls
+  rules:
+  - host: atlantis.gfg24.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: svc-atlantis
+            port:
+              number: 80
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: atlantis-repo
+data:
+  repos.yaml: |
+    repos:
+    - id: /.*/
+      branch: /.*/
+      workflow: netology
+      apply_requirements: [mergeable]
+    workflows:
+      netology:
+        plan:
+          steps:
+          - run: echo "Run plan on $WORKSPACE"
+          - init:
+              extra_args:
+                - -backend-config "access_key=$TF_VAR_BK_ACCESS_KEY"
+                - -backend-config "secret_key=$TF_VAR_BK_SECRET_KEY"
+          - plan
+        apply:
+          steps:
+          - apply
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: atlantis-terraformrc
+data:
+  .terraformrc: |
+    provider_installation {
+      network_mirror {
+        url = "https://terraform-mirror.yandexcloud.net/"
+        include = ["registry.terraform.io/*/*"]
+      }
+      direct {
+        exclude = ["registry.terraform.io/*/*"]
+      }
+    }
+---
+#apiVersion: v1
+#kind: Pod
+#metadata:
+#  name: multitool-pod
+#spec:
+#  containers:
+#  - name: multitool-pod
+#    imagePullPolicy: IfNotPresent
+#    image: wbitt/network-multitool
+#    ports:
+#    - containerPort: 8080

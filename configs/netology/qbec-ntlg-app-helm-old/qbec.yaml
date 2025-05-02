@@ -1,0 +1,34 @@
+apiVersion: qbec.io/v1alpha1
+kind: App
+metadata:
+  name: qbec-ntlg-app
+spec:
+  environments:
+    default:
+      defaultNamespace: default
+      server: https://<MASTER_IP>:<PORT>
+    app:
+      defaultNamespace: app
+      server: https://<MASTER_IP>:<PORT>
+  vars:
+    external:
+      - name: app-name
+        default: my
+    computed:
+      # the variable below is the configuration of the config-map data source where
+      # you can specify a command, arguments to the program, environment variables,
+      # and standard input
+      - name: helmConfig
+        code: |
+          {
+            command: 'helm',
+            args: [ 'template', '-f', std.extVar('qbec.io/env') + '.yaml', std.extVar('app-name'), 'helm-ntlg-app' ],
+            env: {
+              qbec_env: std.extVar('qbec.io/env'),
+            },
+          }
+  dataSources:
+    # data sources are declared to be of the form
+    #   <kind>://<name>?configVar=<configuration-variable-name>
+    # in this case kind=exec, name=ntlg-app, and config var is helmConfig defined above
+    - exec://ntlg-app?configVar=helmConfig

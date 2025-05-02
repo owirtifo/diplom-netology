@@ -1,0 +1,61 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-netology
+  labels:
+    app: app-netology
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: app-netology
+  template:
+    metadata:
+      labels:
+        app: app-netology
+    spec:
+      containers:
+        - name: app-netology
+          image: "owirtifo/ntlg-app:v1.0.0"
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+              protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-netology
+spec:
+  selector:
+    app: app-netology
+  ports:
+    - protocol: TCP
+      port: 8070
+      targetPort: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-netology
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    kubernetes.io/ingress.class: nginx
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+      - app-ntlg.gfg24.com
+    secretName: app-secret-tls
+  rules:
+  - host: app-ntlg.gfg24.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: svc-netology
+            port:
+              number: 8070

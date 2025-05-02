@@ -1,0 +1,25 @@
+apiVersion: qbec.io/v1alpha1
+kind: App
+metadata:
+  name: qbec-ntlg-app
+spec:
+  environments:
+    default:
+      defaultNamespace: default
+      server: https://<MASTER_IP>:<PORT>
+    app:
+      defaultNamespace: app
+      server: https://<MASTER_IP>:<PORT>
+  vars:
+    external:
+      - name: LAST_TAG
+        default: latest
+    computed:
+      - name: helmConfig
+        code: |
+          (import 'components/ntlg-app/datasource.libsonnet').config
+  dataSources:
+    # data sources are declared to be of the form
+    #   <kind>://<name>?configVar=<configuration-variable-name>
+    # in this case kind=helm3, name=helm, and config var is helmConfig defined above
+    - helm3://helm?configVar=helmConfig

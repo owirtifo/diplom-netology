@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ntlg-app.fullname" . }}
+  labels:
+    {{- include "ntlg-app.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetport }}
+      protocol: TCP
+      name: {{ .Values.service.name }}
+  selector:
+    {{- include "ntlg-app.selectorLabels" . | nindent 4 }}

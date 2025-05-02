@@ -1,0 +1,252 @@
+controller:
+  numExecutors: 0
+  admin:
+    createSecret: true
+    # -- Admin username created as a secret if `controller.admin.createSecret` is true
+    username: "<USERNAME>"
+    # -- Admin password created as a secret if `controller.admin.createSecret` is true
+    # @default -- <random password>
+    password: "<PASSWORD>"
+
+  JCasC:
+    defaultConfig: true
+    configScripts:
+     welcome-message: |
+       jenkins:
+         systemMessage: This is Netology App.
+       jobs:
+        - script: >
+            pipelineJob('app-pipeline-job') {
+              triggers {
+                genericTrigger {
+                  token('<TOKEN>')
+                  tokenCredentialId('')
+                  printContributedVariables(false)
+                  printPostContent(false)
+                  silentResponse(false)
+                  allowSeveralTriggersPerBuild(true)
+                }
+              }
+              definition {
+                cps {
+                  sandbox(true)
+                  script('''\
+                    pipeline {
+                        agent {
+                            kubernetes {
+                                inheritFrom 'default'
+                                yaml \'''
+                                apiVersion: v1
+                                kind: Pod
+                                spec:
+                                  containers:
+                                  - name: kaniko
+                                    volumeMounts:
+                                    - name: kaniko-secret
+                                      mountPath: /kaniko/.docker
+                                  volumes:
+                                  - name: kaniko-secret
+                                    projected:
+                                      sources:
+                                      - secret:
+                                          name: dockercred
+                                          items:
+                                          - key: .dockerconfigjson
+                                            path: config.json
+                                \'''
+                            }
+                        }
+                        options {
+                          skipStagesAfterUnstable()
+                          skipDefaultCheckout()
+                        }
+                        environment {
+                            REGISTRY = 'owirtifo'
+                            IMAGE_NAME = 'ntlg-app'
+                            CLUSTER_URL = "https://kubernetes.default"
+                        }
+                        stages {
+                            stage('Checkout Code') {
+                                steps {
+                                    git branch: 'main', url: 'https://github.com/owirtifo/app-netology.git'
+                                    script {
+                                      env.GIT_HASH_SHORT = sh(script:"git rev-parse --short refs/remotes/origin/main", returnStdout: true).trim()
+                                      env.LAST_TAG = sh(script:"git tag | tail -1", returnStdout: true).trim()
+                                      env.GIT_GET_TAG = sh(script:"git tag --points-at", returnStdout: true).trim()
+                                    }
+                                }
+                            }
+                            stage('Show vars') {
+                                steps {
+                                    sh "echo \$GIT_HASH_SHORT"
+                                    echo env.LAST_TAG
+                                    echo env.GIT_GET_TAG
+                                }
+                            }
+                            stage('Kaniko Build & Push Image') {
+                                steps {
+                                    container('kaniko') {
+                                        script {
+                                            if (env.GIT_GET_TAG != '') {
+                                                sh "/kaniko/executor -f `pwd`/Dockerfile -c `pwd` --destination=\$REGISTRY/\$IMAGE_NAME:\$GIT_GET_TAG"
+                                                sh "echo 'FROM \$REGISTRY/\$IMAGE_NAME:\$GIT_GET_TAG' | /kaniko/executor --dockerfile /dev/stdin --destination \$REGISTRY/\$IMAGE_NAME:latest"
+                                            } else {
+                                                sh "/kaniko/executor -f `pwd`/Dockerfile -c `pwd` --destination=\$REGISTRY/\$IMAGE_NAME:\$LAST_TAG-\$GIT_HASH_SHORT"
+                                                sh "echo 'FROM \$REGISTRY/\$IMAGE_NAME:\$LAST_TAG-\$GIT_HASH_SHORT' | /kaniko/executor --dockerfile /dev/stdin --destination \$REGISTRY/\$IMAGE_NAME:latest"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            stage('Install App with Qbec') {
+                                when {
+                                    beforeAgent true
+                                    not {
+                                        environment name: 'GIT_GET_TAG', value: ''
+                                    }
+                                }
+                                agent {
+                                    kubernetes {
+                                    yaml \'''
+                                apiVersion: v1
+                                kind: Pod
+                                spec:
+                                  containers:
+                                  - name: qbec
+                                    image: "alpine/k8s:1.32.2"
+                                    command:
+                                    - sleep
+                                    args:
+                                    - 99d
+                                    workingDir: "/home/jenkins/agent"
+                                    resources:
+                                      limits:
+                                        memory: "2048Mi"
+                                        cpu: "1"
+                                      requests:
+                                        memory: "512Mi"
+                                        cpu: "512m"
+                                  serviceAccountName: qbec
+                                    \'''
+                                    }
+                                }
+                                steps {
+                                    container('qbec') {
+                                        sh \'''
+                                        # Install qbec
+                                        wget -q https://github.com/splunk/qbec/releases/download/v0.16.3/qbec-linux-amd64.tar.gz
+                                        tar zxf qbec-linux-amd64.tar.gz
+                                        cp qbec /usr/bin/
+
+                                        # Create kubeconfig
+
+                                        kubectl config set-cluster k8s-cluster --server=$CLUSTER_URL --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt --embed-certs=true
+                                        kubectl config set-credentials qbec --token=`cat /var/run/secrets/kubernetes.io/serviceaccount/token`
+                                        kubectl config set-context k8s --cluster=k8s-cluster --user=qbec --namespace `cat /var/run/secrets/kubernetes.io/serviceaccount/namespace`
+                                        \'''
+
+                                        git branch: 'main', url: 'https://github.com/owirtifo/app-qbec.git'
+
+                                        // Install App
+                                        sh "qbec apply app --vm:ext-str LAST_TAG --yes"
+                                    }
+                                }
+                            }
+                        }
+                    }'''.stripIndent())
+                }
+              }
+            }
+
+  # List of plugins to be install during Jenkins controller start
+  installPlugins:
+    - kubernetes:4306.vc91e951ea_eb_d
+    - workflow-aggregator:600.vb_57cdd26fdd7
+    - git:5.7.0
+    - configuration-as-code:1932.v75cb_b_f1b_698d
+    - job-dsl:1.91
+    - kubernetes-cli:1.12.1
+    - generic-webhook-trigger:2.3.1
+
+  ingress:
+    # -- Enables ingress
+    enabled: true
+
+    # Override for the default paths that map requests to the backend
+    # -- Override for the default Ingress paths
+    paths: []
+    # - backend:
+    #     serviceName: ssl-redirect
+    #     servicePort: use-annotation
+    # - backend:
+    #     serviceName: >-
+    #       {{ template "jenkins.fullname" . }}
+    #     # Don't use string here, use only integer value!
+    #     servicePort: 8080
+
+    # For Kubernetes v1.14+, use 'networking.k8s.io/v1beta1'
+    # For Kubernetes v1.19+, use 'networking.k8s.io/v1'
+    # -- Ingress API version
+    apiVersion: "networking.k8s.io/v1"
+    # -- Ingress labels
+    labels: {}
+    # -- Ingress annotations
+    annotations:
+      nginx.ingress.kubernetes.io/rewrite-target: /
+      kubernetes.io/ingress.class: nginx
+    # For Kubernetes >= 1.18 you should specify the ingress-controller via the field ingressClassName
+    # See https://kubernetes.io/blog/2020/04/02/improvements-to-the-ingress-api-in-kubernetes-1.18/#specifying-the-class-of-an-ingress
+    ingressClassName: nginx
+
+    # Set this path to jenkinsUriPrefix above or use annotations to rewrite path
+    # -- Ingress path
+    path: /
+
+    # configures the hostname e.g. jenkins.example.com
+    # -- Ingress hostname
+    hostName: jenkins.gfg24.com
+    # -- Hostname to serve assets from
+    resourceRootUrl:
+    # -- Ingress TLS configuration
+    tls:
+    - secretName: jenkins-secret-tls
+      hosts:
+        - jenkins.gfg24.com
+
+  # -- Chown for dir /var/jenkins_home for enable the use of a Jenkins PV hostPath
+  customInitContainers:
+  - name: volume-mount-hack
+    image: "busybox"
+    command: ["sh", "-c", "chown -R 1000:1000 /var/jenkins_home"]
+    securityContext:
+      runAsUser: 0
+      runAsNonRoot: false
+      capabilities:
+        drop:
+          - all
+        add: ["CHOWN"]
+    volumeMounts:
+    - name: jenkins-home
+      mountPath: /var/jenkins_home
+
+persistence:
+  # -- Enable the use of a Jenkins PVC
+#  enabled: false
+  enabled:  true
+  storageClass: jenkins-pv
+
+agent:
+  podName: default
+  customJenkinsLabels: default
+  resources:
+    limits:
+      cpu: "1"
+      memory: "2048Mi"
+  additionalContainers:
+    - sideContainerName: kaniko
+      image:
+        repository: gcr.io/kaniko-project/executor
+        tag: debug
+      command: sleep
+      args: 99d
+      privileged: false
